@@ -21,17 +21,26 @@ ALLOWED_BASE_URLS = [
     "https://reports-public.ieso.ca/public/PredispHourlyEnergyLMP/",
 ]
 
+# Create ./data folder next to server.py on startup
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
 @app.route("/")
 def index():
     """Serve the main HTML file."""
     return send_from_directory(".", "index.html")
+
 
 @app.route("/fetch-csv")
 def fetch_csv():
     """
     Proxy endpoint for IESO CSV files.
     Query param: url=<full ieso csv url>
-    Only whitelisted IESO base URLs are allowed.
+    - Validates against whitelist
+    - Fetches from IESO
+    - Saves to ./data/<filename>.csv
+    - Returns CSV content to browser
     """
     url = request.args.get("url")
 
@@ -49,6 +58,13 @@ def fetch_csv():
         return Response(f"IESO returned error: {e}", status=502)
     except requests.exceptions.RequestException as e:
         return Response(f"Failed to fetch from IESO: {e}", status=502)
+
+    # Save to ./data/<filename> — overwrites if already exists
+    filename = url.split("/")[-1]  # e.g. PUB_DAHourlyEnergyLMP_20260306.csv
+    save_path = os.path.join(DATA_DIR, filename)
+    with open(save_path, "wb") as f:
+        f.write(ieso_response.content)
+    print(f"[saved] {save_path}")
 
     return Response(
         ieso_response.content,
