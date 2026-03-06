@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IESO LMP Viewer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { font-size: 24px; }
+    h3, h4 { font-size: 18px; color: #444; margin: 5px 0; }
+    button {
+      padding: 10px 15px;
+      background-color: #007acc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 5px 4px 5px 0;
+    }
+    button:disabled {
+      background-color: #aaa;
+      cursor: not-allowed;
+    }
+    input[type="text"] {
+      padding: 8px;
+      margin-top: 5px;
+      width: 200px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 15px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: left;
+    }
+    th { background-color: #f2f2f2; }
+    h2 { margin-top: 30px; }
+    .section {
+      margin-top: 25px;
+      display: none;
+    }
+    .highlight-he {
+      background-color: #fffae6;
+      font-weight: bold;
+    }
+    .status {
+      font-size: 14px;
+      margin-top: 10px;
+      color: #555;
+    }
+    .status.error { color: red; }
+    .status.success { color: green; }
+  </style>
+</head>
+<body>
+  <h1>IESO DA and Predispatch LMP Viewer</h1>
+  <h3 id="currentTimeHeader">Current EPT Time: --</h3>
+  <h4 id="iesoTimeHeader">IESO Time (HE): --</h4>
+
+  <p>
+    <strong>Step 1:</strong> Enter the date (YYYYMMDD) to fetch the LMP data:
+  </p>
+  <input type="text" id="dateInput" placeholder="YYYYMMDD" />
+  <button id="fetchBtn">Fetch & Process</button>
+  <button id="refreshBtn" style="background-color: #28a745; display:none;">↻ Refresh Data</button>
+
+  <p id="statusMessage" class="status"></p>
+
+  <div id="daSection" class="section">
+    <h2>DA Hourly Energy LMP (GSPC-LT.G1)</h2>
+    <table id="da-table">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div id="predispSection" class="section">
+    <h2>Predispatch Hourly Energy LMP (GSPC-LT.G1)</h2>
+    <table id="predisp-table">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    // -------------------------------------------------------------------------
+    // Config — proxy endpoint (same origin as this page)
+    // -------------------------------------------------------------------------
+    const PROXY = "/fetch-csv";
+
+    const DA_BASE      = "https://reports-public.ieso.ca/public/DAHourlyEnergyLMP/PUB_DAHourlyEnergyLMP_";
+    const PREDISP_BASE = "https://reports-public.ieso.ca/public/PredispHourlyEnergyLMP/PUB_PredispHourlyEnergyLMP_";
+
+    // -------------------------------------------------------------------------
+    // Time displays
+    // -------------------------------------------------------------------------
+    function updateTimeDisplays() {
+      const now = new Date();
+
+      const eptFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Toronto',
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+      });
+      document.getElementById('currentTimeHeader').textContent =
+        'Current EPT Time: ' + eptFormatter.format(now);
+
+      // IESO time is always EST (UTC-5), no DST
+      const estDate = new Date(now.getTime() + now.getTimezoneOffset() * 60000 - 5 * 3600000);
+      const he = (estDate.getHours() + 1) % 25 || 1;
+      document.getElementById('iesoTimeHeader').textContent = 'IESO Time (HE): ' + he;
+    }
+
+    updateTimeDisplays();
+    setInterval(updateTimeDisplays, 1000);
+
+    // -------------------------------------------------------------------------
+    // Default date
+    // -------------------------------------------------------------------------
+    document.getElementById('dateInput').value =
+      new Date().toISOString().split('T')[0].replace(/-/g, '');
+
+    // -------------------------------------------------------------------------
+    // Fetch + parse + render
+    // -------------------------------------------------------------------------
+    function setStatus(msg, type = '') {
+      const el = document.getElementById('statusMessage');
+      el.textContent = msg;
+      el.className = 'status ' + type;
+    }
+
+    async function fetchCsv(isoUrl) {
+      const proxyUrl = `${PROXY}?url=${encodeURIComponent(isoUrl)}`;
+      const response = await fetch(proxyUrl);
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`HTTP ${response.status}: ${body}`);
+      }
+      return response.text();
+    }
+
+    function parseCsvAndRender(csv, tableId, sectionId) {
+      const lines = csv.trim().split('\n');
+      if (lines.length < 3) throw new Error("CSV too short — unexpected format.");
+
+      const headers = lines[1].split(',');
+      const rows = lines.slice(2).map(line => line.split(','));
+
+      const pricingIdx     = headers.indexOf('Pricing Location');
+      const deliveryHourIdx = headers.indexOf('Delivery Hour');
+
+      if (pricingIdx === -1 || deliveryHourIdx === -1) {
+        throw new Error("Could not find 'Pricing Location' or 'Delivery Hour' columns.");
+      }
+
+      const filteredRows = rows.filter(row => row[pricingIdx] === 'GSPC-LT.G1');
+
+      const tableHead = document.querySelector(`#${tableId} thead`);
+      const tableBody = document.querySelector(`#${tableId} tbody`);
+      tableHead.innerHTML = '';
+      tableBody.innerHTML = '';
+
+      // Header row
+      const headerRow = document.createElement('tr');
+      headers.forEach(col => {
+        const th = document.createElement('th');
+        th.textContent = col;
+        headerRow.appendChild(th);
+      });
+      tableHead.appendChild(headerRow);
+
+      // Current HE for highlighting
+      const currentHE = parseInt(
+        document.getElementById('iesoTimeHeader').textContent.split(':')[1].trim()
+      );
+
+      filteredRows.forEach(row => {
+        const tr = document.createElement('tr');
+        const deliveryHour = parseInt(row[deliveryHourIdx]);
+        row.forEach(cell => {
+          const td = document.createElement('td');
+          td.textContent = cell;
+          tr.appendChild(td);
+        });
+        if (deliveryHour === currentHE) tr.classList.add('highlight-he');
+        tableBody.appendChild(tr);
+      });
+
+      document.getElementById(sectionId).style.display = 'block';
+    }
+
+    async function fetchAndProcess() {
+      const date = document.getElementById('dateInput').value.trim();
+      if (!/^\d{8}$/.test(date)) {
+        alert("Please enter a valid date in YYYYMMDD format.");
+        return;
+      }
+
+      const fetchBtn   = document.getElementById('fetchBtn');
+      const refreshBtn = document.getElementById('refreshBtn');
+      fetchBtn.disabled = true;
+      setStatus("Fetching DA LMP data...");
+
+      try {
+        // --- DA ---
+        const daUrl  = `${DA_BASE}${date}.csv`;
+        const daCsv  = await fetchCsv(daUrl);
+        parseCsvAndRender(daCsv, 'da-table', 'daSection');
+        setStatus("Fetching Predispatch LMP data...");
+
+        // --- Predispatch ---
+        const pdUrl  = `${PREDISP_BASE}${date}.csv`;
+        const pdCsv  = await fetchCsv(pdUrl);
+        parseCsvAndRender(pdCsv, 'predisp-table', 'predispSection');
+
+        setStatus(`Data loaded for ${date}.`, 'success');
+        refreshBtn.style.display = 'inline-block';
+      } catch (err) {
+        setStatus(`Error: ${err.message}`, 'error');
+      } finally {
+        fetchBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('fetchBtn').addEventListener('click', fetchAndProcess);
+    document.getElementById('refreshBtn').addEventListener('click', fetchAndProcess);
+  </script>
+</body>
+</html>
