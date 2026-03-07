@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IESO LMP Viewer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { font-size: 24px; }
+    h3, h4 { font-size: 18px; color: #444; margin: 5px 0; }
+
+    /* ---- Tabs ---- */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      margin: 20px 0 0 0;
+      border-bottom: 2px solid #007acc;
+    }
+    .tab-btn {
+      padding: 8px 20px;
+      background: #e8e8e8;
+      border: 1px solid #ccc;
+      border-bottom: none;
+      border-radius: 5px 5px 0 0;
+      cursor: pointer;
+      font-size: 14px;
+      color: #333;
+    }
+    .tab-btn.active {
+      background: #007acc;
+      color: white;
+      border-color: #007acc;
+    }
+    .tab-panel { display: none; padding-top: 20px; }
+    .tab-panel.active { display: block; }
+
+    /* ---- Buttons ---- */
+    button.action-btn {
+      padding: 10px 15px;
+      background-color: #007acc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 5px 4px 5px 0;
+    }
+    button.action-btn.green { background-color: #28a745; }
+    button.action-btn:disabled { background-color: #aaa; cursor: not-allowed; }
+
+    /* ---- Inputs ---- */
+    input[type="text"] {
+      padding: 8px;
+      margin-top: 5px;
+      width: 200px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+
+    /* ---- Tables ---- */
+    table { border-collapse: collapse; margin-top: 15px; }
+    th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: center; }
+    th { background-color: #f2f2f2; }
+    td:first-child, th:first-child { text-align: left; font-weight: bold; }
+
+    /* Public tables full width */
+    table.full-width { width: 100%; }
+
+    h2 { margin-top: 30px; }
+    .section { margin-top: 25px; display: none; }
+
+    /* Highlight current HE column */
+    .highlight-he { background-color: #fffae6; font-weight: bold; }
+
+    /* ---- Status ---- */
+    .status { font-size: 14px; margin-top: 10px; color: #555; }
+    .status.error { color: red; }
+    .status.success { color: green; }
+
+    /* Private table — horizontal scroll for 25 columns */
+    .table-scroll { overflow-x: auto; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <h1>IESO LMP Viewer</h1>
+  <h3 id="currentTimeHeader">Current EPT Time: --</h3>
+  <h4 id="iesoTimeHeader">IESO Time (HE): --</h4>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('public')">&#128202; Public LMP Reports</button>
+    <button class="tab-btn" onclick="switchTab('private')">&#128274; Private Schedules</button>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- TAB: Public LMP Reports                                          -->
+  <!-- ================================================================ -->
+  <div id="tab-public" class="tab-panel active">
+    <p><strong>Enter date (YYYYMMDD) to fetch DA and Predispatch LMP data:</strong></p>
+    <input type="text" id="dateInput" placeholder="YYYYMMDD" />
+    <button class="action-btn" id="fetchBtn">Fetch &amp; Process</button>
+    <button class="action-btn green" id="refreshBtn" style="display:none;">&#8635; Refresh</button>
+    <p id="statusMessage" class="status"></p>
+
+    <div id="daSection" class="section">
+      <h2>DA Hourly Energy LMP (GSPC-LT.G1)</h2>
+      <table id="da-table" class="full-width"><thead></thead><tbody></tbody></table>
+    </div>
+    <div id="predispSection" class="section">
+      <h2>Predispatch Hourly Energy LMP (GSPC-LT.G1)</h2>
+      <table id="predisp-table" class="full-width"><thead></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- TAB: Private Schedules                                           -->
+  <!-- ================================================================ -->
+  <div id="tab-private" class="tab-panel">
+    <p><strong>Fetch Predispatch Schedules (GSPC resources, next delivery date):</strong></p>
+    <button class="action-btn" id="fetchPrivateBtn">Fetch Private Schedules</button>
+    <button class="action-btn green" id="refreshPrivateBtn" style="display:none;">&#8635; Refresh</button>
+    <p id="privateStatus" class="status"></p>
+    <div id="privateTablesContainer"></div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // Config
+    // =========================================================================
+    const PROXY         = "/fetch-csv";
+    const PRIVATE_PROXY = "/fetch-private";
+    const DA_BASE       = "https://reports-public.ieso.ca/public/DAHourlyEnergyLMP/PUB_DAHourlyEnergyLMP_";
+    const PREDISP_BASE  = "https://reports-public.ieso.ca/public/PredispHourlyEnergyLMP/PUB_PredispHourlyEnergyLMP_";
+    const PRIVATE_URL   = "https://reports.ieso.ca/api/v2.0/files/private/GSPC/PredispSchedules2/CNF-GSPC_PredispSchedules2.xml?transferMode=ASCII&idp_id=ieso";
+
+    // =========================================================================
+    // Tab switching
+    // =========================================================================
+    function switchTab(name) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.add('active');
+      document.querySelectorAll('.tab-btn')[name === 'public' ? 0 : 1].classList.add('active');
+    }
+
+    // =========================================================================
+    // Time displays
+    // =========================================================================
+    function updateTimeDisplays() {
+      const now = new Date();
+      const eptFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Toronto',
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+      });
+      document.getElementById('currentTimeHeader').textContent =
+        'Current EPT Time: ' + eptFormatter.format(now);
+
+      const estDate = new Date(now.getTime() + now.getTimezoneOffset() * 60000 - 5 * 3600000);
+      const he = (estDate.getHours() + 1) % 25 || 1;
+      document.getElementById('iesoTimeHeader').textContent = 'IESO Time (HE): ' + he;
+    }
+    updateTimeDisplays();
+    setInterval(updateTimeDisplays, 1000);
+
+    document.getElementById('dateInput').value =
+      new Date().toISOString().split('T')[0].replace(/-/g, '');
+
+    // =========================================================================
+    // Status helper
+    // =========================================================================
+    function setStatus(id, msg, type = '') {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.className = 'status ' + type;
+    }
+
+    // =========================================================================
+    // Current HE helper
+    // =========================================================================
+    function getCurrentHE() {
+      return parseInt(document.getElementById('iesoTimeHeader').textContent.split(':')[1].trim());
+    }
+
+    // =========================================================================
+    // PUBLIC: fetch CSV + render table
+    // =========================================================================
+    async function fetchCsv(isoUrl) {
+      const res = await fetch(`${PROXY}?url=${encodeURIComponent(isoUrl)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      return res.text();
+    }
+
+    function parseCsvAndRender(csv, tableId, sectionId) {
+      const lines      = csv.trim().split('\n');
+      if (lines.length < 3) throw new Error("CSV too short.");
+      const headers    = lines[1].split(',');
+      const rows       = lines.slice(2).map(l => l.split(','));
+      const pricingIdx = headers.indexOf('Pricing Location');
+      const hourIdx    = headers.indexOf('Delivery Hour');
+      if (pricingIdx === -1 || hourIdx === -1)
+        throw new Error("Required columns not found in CSV.");
+
+      const filtered  = rows.filter(r => r[pricingIdx] === 'GSPC-LT.G1');
+      const thead     = document.querySelector(`#${tableId} thead`);
+      const tbody     = document.querySelector(`#${tableId} tbody`);
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+
+      const hr = document.createElement('tr');
+      headers.forEach(col => {
+        const th = document.createElement('th');
+        th.textContent = col;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+
+      const currentHE = getCurrentHE();
+      filtered.forEach(row => {
+        const tr = document.createElement('tr');
+        if (parseInt(row[hourIdx]) === currentHE) tr.classList.add('highlight-he');
+        row.forEach(cell => {
+          const td = document.createElement('td');
+          td.textContent = cell;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      document.getElementById(sectionId).style.display = 'block';
+    }
+
+    async function fetchAndProcess() {
+      const date = document.getElementById('dateInput').value.trim();
+      if (!/^\d{8}$/.test(date)) { alert("Please enter a valid date in YYYYMMDD format."); return; }
+      const fetchBtn = document.getElementById('fetchBtn');
+      fetchBtn.disabled = true;
+      setStatus('statusMessage', "Fetching DA LMP data...");
+      try {
+        parseCsvAndRender(await fetchCsv(`${DA_BASE}${date}.csv`), 'da-table', 'daSection');
+        setStatus('statusMessage', "Fetching Predispatch LMP data...");
+        parseCsvAndRender(await fetchCsv(`${PREDISP_BASE}${date}.csv`), 'predisp-table', 'predispSection');
+        setStatus('statusMessage', `Data loaded for ${date}.`, 'success');
+        document.getElementById('refreshBtn').style.display = 'inline-block';
+      } catch (err) {
+        setStatus('statusMessage', `Error: ${err.message}`, 'error');
+      } finally {
+        fetchBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('fetchBtn').addEventListener('click', fetchAndProcess);
+    document.getElementById('refreshBtn').addEventListener('click', fetchAndProcess);
+
+    // =========================================================================
+    // PRIVATE: fetch XML via server proxy + render pivot table
+    // Resources as rows, HE1-HE24 as columns
+    // =========================================================================
+    async function fetchPrivateSchedules() {
+      const fetchBtn = document.getElementById('fetchPrivateBtn');
+      fetchBtn.disabled = true;
+      setStatus('privateStatus', "Fetching private schedules from IESO...");
+      try {
+        const res = await fetch(PRIVATE_PROXY, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: PRIVATE_URL })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        parseXmlAndRender(await res.text());
+        setStatus('privateStatus', "Private schedules loaded.", 'success');
+        document.getElementById('refreshPrivateBtn').style.display = 'inline-block';
+      } catch (err) {
+        setStatus('privateStatus', `Error: ${err.message}`, 'error');
+      } finally {
+        fetchBtn.disabled = false;
+      }
+    }
+
+    function parseXmlAndRender(xmlText) {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+      if (xmlDoc.querySelector("parsererror")) throw new Error("Failed to parse XML response.");
+
+      const ns     = "http://www.ieso.ca/schema";
+      const getVal = (parent, tag) => {
+        const el = parent.getElementsByTagNameNS(ns, tag)[0];
+        return el ? el.textContent.trim() : '';
+      };
+
+      const deliveryDate = getVal(xmlDoc, 'DeliveryDate');
+      const createdAt    = getVal(xmlDoc, 'CreatedAt');
+      const currentHE    = getCurrentHE();
+      const container    = document.getElementById('privateTablesContainer');
+      container.innerHTML = '';
+
+      // Info line
+      const info = document.createElement('p');
+      info.style.cssText = 'color:#555; font-size:14px; margin-top:12px;';
+      info.innerHTML = `<strong>Delivery Date:</strong> ${deliveryDate} &nbsp;|&nbsp; <strong>Created:</strong> ${createdAt}`;
+      container.appendChild(info);
+
+      const resources = xmlDoc.getElementsByTagNameNS(ns, 'Resource');
+      if (resources.length === 0) throw new Error("No Resource elements found in XML.");
+
+      // Build pivot: resourceName -> { hour -> energyMW }
+      const resourceData = [];
+      Array.from(resources).forEach(resource => {
+        const name    = getVal(resource, 'ResourceName');
+        const type    = getVal(resource, 'ResourceType');
+        const hourMap = {};
+        Array.from(resource.getElementsByTagNameNS(ns, 'HourlyEnergy')).forEach(entry => {
+          const h = parseInt(getVal(entry, 'DeliveryHour'));
+          const e = getVal(entry, 'EnergyMW');
+          hourMap[h] = e;
+        });
+        resourceData.push({ name, type, hourMap });
+      });
+
+      // Table title
+      const h2 = document.createElement('h2');
+      h2.textContent = 'Predispatch Schedule — Energy MW by Resource';
+      container.appendChild(h2);
+
+      // Scrollable wrapper (25 columns can overflow on small screens)
+      const wrapper = document.createElement('div');
+      wrapper.className = 'table-scroll';
+
+      const table  = document.createElement('table');
+      const thead  = document.createElement('thead');
+      const tbody  = document.createElement('tbody');
+
+      // Header row: Resource | HE1 | HE2 | ... | HE24
+      const headerRow = document.createElement('tr');
+      const thRes = document.createElement('th');
+      thRes.textContent = 'Resource';
+      headerRow.appendChild(thRes);
+      for (let h = 1; h <= 24; h++) {
+        const th = document.createElement('th');
+        th.textContent = `HE${h}`;
+        if (h === currentHE) th.classList.add('highlight-he');
+        headerRow.appendChild(th);
+      }
+      thead.appendChild(headerRow);
+
+      // One row per resource
+      resourceData.forEach(({ name, type, hourMap }) => {
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = `${name} (${type})`;
+        tr.appendChild(tdName);
+        for (let h = 1; h <= 24; h++) {
+          const td = document.createElement('td');
+          td.textContent = hourMap[h] !== undefined ? hourMap[h] : '—';
+          if (h === currentHE) td.classList.add('highlight-he');
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
+      container.appendChild(wrapper);
+    }
+
+    document.getElementById('fetchPrivateBtn').addEventListener('click', fetchPrivateSchedules);
+    document.getElementById('refreshPrivateBtn').addEventListener('click', fetchPrivateSchedules);
+  </script>
+</body>
+</html>
