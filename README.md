@@ -1,5 +1,20 @@
 # IESO LMP Viewer
 
+## Revision History
+
+| Rev | Date | Description |
+|---|---|---|
+| A | 2026-03-06 | Initial release — public LMP viewer with manual CSV download/upload |
+| B | 2026-03-06 | Server-side CSV fetch via Flask proxy, eliminated manual download/upload |
+| C | 2026-03-06 | Added CSV auto-save to `data/` folder |
+| D | 2026-03-06 | Added installer (`install.bat`), launcher (`Start_LMP_Server.bat`), desktop shortcut |
+| E | 2026-03-06 | Added private IESO report tab with XML fetch, pivot table (resources x HE1-24) |
+| F | 2026-03-06 | Credentials stored in `config.py` via install prompt; removed browser credential UI |
+| G | 2026-03-07 | Fixed `config.py` write corruption — switched from batch echo to Python writer |
+| H | 2026-03-07 | Install directory now user-selectable during install |
+
+---
+
 A lightweight local web app for viewing IESO Day-Ahead and Predispatch Locational Marginal Price (LMP) data, with support for private confidential schedule reports. Served over Tailscale for secure access from any device on your tailnet.
 
 ---
